@@ -1,0 +1,23 @@
+
+=============================================================
+  PID BASELINE — END OF RUN SUMMARY
+=============================================================
+  Frames processed     : 3134
+  Run duration         : 115.6 s
+
+  --- Metric 1: Cross-Track Error (CTE) ---
+  Mean absolute CTE    : 51.19 px
+  Std dev CTE          : 64.05 px
+  Max absolute CTE     : 155.24 px
+
+  --- Metric 2: Control Smoothness ---
+  Mean |dTurn| /s      : 66.4732 rad/s2
+  Std dev smoothness   : 228.0998
+  (lower = smoother)
+
+  --- Metric 3: Line-Loss Rate ---
+  Frames with no line  : 765 / 3134
+  Line-loss rate       : 24.41 %
+
+  Per-frame log saved  : pid_baseline_metrics.csv
+=============================================================

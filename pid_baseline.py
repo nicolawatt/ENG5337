@@ -151,7 +151,7 @@ try:
 
                     # D.2 - Threshold and blob detection
                     binary = vision.subselect_and_threshold(gray_sm, 50, 100, 50, 255)
-                    col, row, area = vision.image_find_objects(binary, 8, 50, 3000)
+                    col, row, area = vision.image_find_objects(binary, 8, 500, 2000)
                     # image_find_objects returns (None,None,None) when no blob found
                     if col is None:
                         col, row, area = -1, -1, 0
@@ -169,7 +169,9 @@ try:
                         cte_list.append(cte)
 
                     # ── D.3 - PID speed command ────────────────────────────────
-                    forSpd, turnSpd = line2SpdMap.send((col if col != -1 else None, 0.4, 0.4))
+                    kP = 0.4
+                    kD = 0.4
+                    forSpd, turnSpd = line2SpdMap.send((col if col != -1 else None, kP, kD))
 
                     # ── Metric 2: Control Smoothness ───────────────────────────
                     delta_turn = abs(turnSpd - prevTurnSpd) / sampleRate
