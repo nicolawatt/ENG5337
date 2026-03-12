@@ -1,0 +1,118 @@
+LAB PROCEDURE — PID BASELINE + CNN+PID DATA COLLECTION
+ENG5337 Group Project
+
+0. BEFORE 
+   0.1. Train CNN offline, note TRAIN_MEAN and TRAIN_STD from console output
+   0.2. Paste those values into cnn_pid_line_follower.py (lines marked with <--)
+   0.3. Confirm best_mri_cnn.pt is in the project folder
+   0.4. All 7 files in one folder:
+      cnn_pid_line_follower.py
+      pid_baseline.py
+      qbot_platform_functions.py
+      qlabs_setup.py
+      best_mri_cnn.pt
+      observer.py
+      line_following.py  (backup)
+
+
+
+1. PID BASELINE
+
+1.1. SETUP
+   1.1.1. Open Quanser Interactive Labs — wait for full load
+   1.1.2. Open Terminal 1 in project folder
+   1.1.3. Open Terminal 2 in project folder
+
+1.2. RUN
+   1.2.1.  Terminal 1:  python pid_baseline.py
+   1.2.2.  Wait for:    "QLabs setup completed"
+                 "[BASELINE] PID line follower running"
+   1.2.3.  Terminal 2:  python observer.py
+   1.2.4.  Confirm camera feed appears in observer window
+   1.2.5.  Click into QIL window for keyboard focus
+   1.2.6.  Press SPACE  — arm the robot
+   1.2.7. Drive manually (no line follow) to the START of the line
+    using keyboard controls
+   1.2.8. Press 7      — enable line following
+   1.2.9. Let robot complete AT LEAST one full lap
+   1.2.10. Press U      — stop
+
+1.3. SAVE DATA
+   1.3.1. Rename output files immediately:
+      pid_baseline_metrics.csv  →  pid_baseline_metrics_run1.csv
+      pid_baseline_summary.txt  →  pid_baseline_summary_run1.txt
+   1.3.2. Repeat steps 4-14 for a second run:
+      pid_baseline_metrics.csv  →  pid_baseline_metrics_run2.csv
+      pid_baseline_summary.txt  →  pid_baseline_summary_run2.txt
+
+NOTE: Remember exactly where on the track you started — CNN+PID
+must start from the same point for a fair comparison.
+
+
+2. CNN + PID
+
+2.1. RUN
+
+   2.1.1.  Terminal 1:  python cnn_pid_line_follower.py
+   2.1.2.  Wait for:    "Model loaded"
+                 "QLabs setup completed"
+                 "[CNN+PID] Ready"
+   2.1.3.  Terminal 2:  python observer.py  (restart it)
+   2.1.4.  Confirm camera feed appears
+   2.1.5.  Click into QIL window for keyboard focus
+   2.1.6.  Press SPACE  — arm the robot
+   2.1.7.  Drive manually to the SAME start point as Part 1
+   2.1.8.  Press 7      — enable line following
+   2.1.9.  Watch console — you should see class predictions and soft error
+    values scrolling (straight/left/right/off_line)
+
+IF ROBOT DOES NOT FOLLOW THE LINE — tune PID gains (see below)
+IF ROBOT FOLLOWS REASONABLY — continue to step 10
+
+   2.1.10. Let robot complete AT LEAST one full lap
+   2.1.11. Press U      — stop
+
+2.2. SAVE DATA
+
+2.2.1. Rename output files:
+      cnn_pid_metrics.csv   →  cnn_pid_metrics_run1.csv
+      cnn_pid_summary.txt   →  cnn_pid_summary_run1.txt
+   2.2.2. Repeat for a second run (run2)
+
+
+
+PID TUNING (if needed between runs)
+Edit the top of cnn_pid_line_follower.py:
+  Kp = 0.4   Ki = 0.01   Kd = 0.08  (starting values)
+
+Symptom                        Fix
+-----------                    ----
+Robot barely reacts            Increase Kp (try 0.6, 0.8)
+Robot oscillates/wobbles       Reduce Kp, then increase Kd
+Robot overshoots on curves     Increase Kd
+Robot drifts slowly off line   Increase Ki slightly (0.02-0.05)
+
+Tune in this order: Kp first, then Kd, then Ki last.
+Note down final gains — they go in the summary file and on slides.
+
+
+3. RECOVERY TEST (demo prep)
+
+3.1. Run cnn_pid_line_follower.py with line following active
+3.2. In QIL, manually drag the robot off the line
+3.3. Observe: does it recover? How many seconds does it take?
+3.4. Repeat 2-3 times and note results for presentation
+3.5. Repeat the same test with pid_baseline.py for comparison
+
+DATA TO GET
+
+ - pid_baseline_metrics_run1.csv     
+ - pid_baseline_metrics_run2.csv    
+ - cnn_pid_metrics_run1.csv         
+ - cnn_pid_metrics_run2.csv          
+
+ - pid_baseline_summary_run1.txt    
+ - cnn_pid_summary_run1.txt         
+
+ - Screen recording of both runs          -- backup for demo
+ - Final Kp, Ki, Kd values noted down    -- needed for slides
