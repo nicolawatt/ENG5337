@@ -55,7 +55,7 @@ commands, arm, noKill = np.zeros((2), dtype=np.float64), 0, True
 counterDown = 0
 endFlag, forSpd, turnSpd = False, 0.0, 0.0
 lineFollow  = False
-recording   = False
+recording   = False   # auto-set to match lineFollow state
 frame_count = 0
 saved_count = 0
 
@@ -71,8 +71,8 @@ timeHIL, prevTimeHIL = elapsed_time(), elapsed_time() - 0.017
 print("\n" + "=" * 55)
 print("  FRAME CAPTURE")
 print("=" * 55)
-print("  SPACE=arm  7=PID toggle  R=record toggle  U=quit")
-print(f"  Saving every {SAVE_EVERY_N} frames when recording")
+print("  SPACE=arm  7=toggle PID + recording  U=quit")
+print(f"  Saves every {SAVE_EVERY_N} frames while line following is ON")
 print("=" * 55 + "\n")
 
 try:
@@ -110,11 +110,9 @@ try:
                 if keyboard.k_u:
                     noKill = False
 
-                # R key toggles recording
-                if getattr(keyboard, 'k_r', False):
-                    recording = not recording
-                    state = "STARTED" if recording else "PAUSED"
-                    print(f"  Recording {state} — frames saved so far: {saved_count}")
+                # Auto-record whenever line following is active
+                # Press 7 to start/stop both PID and recording together
+                recording = lineFollow
 
             # ── Drive commands ────────────────────────────────────────────────
             if not lineFollow:
