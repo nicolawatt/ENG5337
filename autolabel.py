@@ -1,226 +1,241 @@
-#-----------------------------------------------------------------------------#
-#------------------Skills Progression 1 - Task Automation---------------------#
-#-----------------------------------------------------------------------------#
-#----------------------------Lab 3 - Auto Labeller----------------------------#
-#-----------------------------------------------------------------------------#
-
-# Run this OFFLINE after capture.py to automatically label saved frames.
-# Analyses each image using the same blob detection pipeline as the QBot,
-# then sorts frames into class subfolders ready for ImageFolder training.
-#
-# LABELLING LOGIC:
-#   no_line         : no blob detected
-#   straight        : one blob, centroid within centre_band of image centre
-#   left            : one blob, centroid left of centre_band
-#   right           : one blob, centroid right of centre_band
-#   horizontal_line : one blob, width >> height (aspect ratio > threshold)
-#   t_junction      : exactly two blobs detected
-#   crossroads      : three or more blobs detected
-#
-# OUTPUT:
-#   data_collection/
-#       train/
-#           straight/ left/ right/ no_line/
-#           horizontal_line/ t_junction/ crossroads/
-#       valid/
-#           (same — every VALID_EVERY th image per class auto-routed here)
-#
-# USAGE:
-#   python autolabel.py
-#   Optionally set RAW_DIR to point at your frames folder.
-#   Optionally set REVIEW=True to preview borderline cases before saving.
-
 import os
 import cv2
-import numpy as np
+import math
+import random
 import shutil
 from pathlib import Path
 
-# ── Config ────────────────────────────────────────────────────────────────────
+# ----------------------------
+# CONFIG
+# ----------------------------
+INPUT_DIR = "raw_frames"          # folder containing unlabeled images
+OUTPUT_DIR = "dataset"        # output dataset folder
+VAL_RATIO = 0.2               # 20% validation split
+RANDOM_SEED = 42
 
-RAW_DIR    = "raw_frames"       # folder of unlabelled frames from capture.py
-OUTPUT_DIR = "data_collection"  # root output for labelled dataset
-VALID_EVERY = 5                 # every Nth image per class → valid/
-REVIEW      = False             # set True to preview uncertain frames in a window
+CLASSES = ["right", "left", "vertical", "horizontal", "junction", "no line"]
 
-# Blob detection parameters — match values used in QBot pipeline
-ROW_START     = 50    # subselect rows (same as subselect_and_threshold call)
-ROW_END       = 100
-MIN_THRESHOLD = 50
-MAX_THRESHOLD = 255
-CONNECTIVITY  = 8
-MIN_AREA      = 50
-MAX_AREA      = 3000
+# Thresholds you may need to tune for your images
+BIN_THRESHOLD = 180           # threshold for white line extraction
+MIN_COMPONENT_AREA = 150      # ignore tiny blobs
+MIN_LINE_LENGTH = 40          # ignore very short fitted lines
+JUNCTION_MIN_COMPONENTS = 2   # if >= this many major line parts -> junction
 
-# Classification thresholds — tune these if labels look wrong
-IMAGE_WIDTH   = 320
-IMAGE_CENTRE  = IMAGE_WIDTH // 2       # 160
-CENTRE_BAND   = 30    # pixels either side of centre → classified as straight
-ASPECT_RATIO_THRESHOLD = 4.0  # blob width/height > this → horizontal_line
-LARGE_BLOB_WIDTH_RATIO = 0.6  # blob width > this fraction of image → crossroads
 
-# ── Create output directories ─────────────────────────────────────────────────
+# ----------------------------
+# UTILS
+# ----------------------------
+def ensure_dirs(base_dir):
+    for split in ["train", "val"]:
+        for cls in CLASSES:
+            os.makedirs(os.path.join(base_dir, split, cls), exist_ok=True)
 
-CLASSES = ['straight', 'left', 'right', 'no_line',
-           'horizontal_line', 't_junction', 'crossroads']
 
-for split in ['train', 'valid']:
-    for cls in CLASSES:
-        os.makedirs(os.path.join(OUTPUT_DIR, split, cls), exist_ok=True)
+def list_images(folder):
+    exts = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
+    return [p for p in Path(folder).iterdir() if p.suffix.lower() in exts]
 
-# ── Blob detection (mirrors QBot pipeline exactly) ────────────────────────────
 
-def detect_blobs(gray_image):
-    """
-    Apply same subselect + threshold + connected components as QBot pipeline.
-    Returns list of (col, row, area, width, height) for each valid blob.
-    """
-    sub   = gray_image[ROW_START:ROW_END, :]
-    _, binary = cv2.threshold(sub, MIN_THRESHOLD, MAX_THRESHOLD,
-                              cv2.THRESH_BINARY)
+def copy_to_split(src_path, dst_root, split, label):
+    dst_path = os.path.join(dst_root, split, label, src_path.name)
+    shutil.copy2(src_path, dst_path)
 
-    output = cv2.connectedComponentsWithStats(binary, CONNECTIVITY)
-    labels, ids, values, centroids = output
 
-    blobs = []
-    for idx, val in enumerate(values):
-        area = val[4]
-        if MIN_AREA < area < MAX_AREA:
-            col    = centroids[idx][0]
-            row    = centroids[idx][1]
-            width  = val[cv2.CC_STAT_WIDTH]
-            height = val[cv2.CC_STAT_HEIGHT]
-            blobs.append((col, row, area, width, height))
+# ----------------------------
+# IMAGE ANALYSIS
+# ----------------------------
+def extract_white_mask(gray):
+    # Threshold bright line on dark background
+    _, mask = cv2.threshold(gray, BIN_THRESHOLD, 255, cv2.THRESH_BINARY)
 
-    return blobs, binary
+    # Clean up small noise
+    kernel = np_kernel(3)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    return mask
 
-# ── Labelling logic ───────────────────────────────────────────────────────────
 
-def assign_label(blobs):
-    """
-    Assign a class label based on detected blobs.
+def np_kernel(k):
+    import numpy as np
+    return np.ones((k, k), dtype=np.uint8)
 
-    Returns (label, confidence_str) where confidence_str is a human-readable
-    description of why this label was assigned — useful for debugging.
-    """
-    n = len(blobs)
 
-    if n == 0:
-        return 'no_line', 'no blobs detected'
+def component_stats(mask):
+    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
 
-    if n >= 3:
-        return 'crossroads', f'{n} blobs detected'
+    components = []
+    for i in range(1, num_labels):  # skip background
+        area = stats[i, cv2.CC_STAT_AREA]
+        if area < MIN_COMPONENT_AREA:
+            continue
 
-    if n == 2:
-        return 't_junction', '2 blobs detected'
+        x = stats[i, cv2.CC_STAT_LEFT]
+        y = stats[i, cv2.CC_STAT_TOP]
+        w = stats[i, cv2.CC_STAT_WIDTH]
+        h = stats[i, cv2.CC_STAT_HEIGHT]
 
-    # n == 1 — single blob
-    col, row, area, width, height = blobs[0]
+        comp_mask = (labels == i).astype("uint8") * 255
+        components.append({
+            "label": i,
+            "area": area,
+            "bbox": (x, y, w, h),
+            "mask": comp_mask
+        })
+    return components
 
-    # Check for horizontal line: very wide relative to height
-    aspect = width / max(height, 1)
-    if aspect > ASPECT_RATIO_THRESHOLD:
-        return 'horizontal_line', f'aspect ratio={aspect:.1f}'
 
-    # Check lateral position
-    offset = col - IMAGE_CENTRE
-    if abs(offset) <= CENTRE_BAND:
-        return 'straight', f'offset={offset:.1f}px (within centre band)'
-    elif offset < 0:
-        return 'left', f'offset={offset:.1f}px (left of centre)'
-    else:
-        return 'right', f'offset={offset:.1f}px (right of centre)'
+def fit_line_angle_and_length(comp_mask):
+    ys, xs = cv2.findNonZero(comp_mask).reshape(-1, 2)[:, 1], cv2.findNonZero(comp_mask).reshape(-1, 2)[:, 0]
 
-# ── Main labelling loop ───────────────────────────────────────────────────────
+    points = cv2.findNonZero(comp_mask)
+    if points is None or len(points) < 2:
+        return None, 0
 
-raw_paths = sorted(Path(RAW_DIR).glob("*.png"))
-total     = len(raw_paths)
+    line = cv2.fitLine(points, cv2.DIST_L2, 0, 0.01, 0.01)
 
-if total == 0:
-    print(f"\nNo .png files found in '{RAW_DIR}'.")
-    print("Run capture.py first to collect frames.\n")
-    exit()
+    vx = float(line[0][0])
+    vy = float(line[1][0])
 
-print(f"\n{'='*60}")
-print(f"  AUTO LABELLER")
-print(f"{'='*60}")
-print(f"  Input : {os.path.abspath(RAW_DIR)}  ({total} frames)")
-print(f"  Output: {os.path.abspath(OUTPUT_DIR)}")
-print(f"  Valid split: every {VALID_EVERY}th image per class")
-print(f"{'='*60}\n")
+    # angle in degrees, normalized to [-90, 90]
+    angle = math.degrees(math.atan2(vy, vx))
+    while angle > 90:
+        angle -= 180
+    while angle < -90:
+        angle += 180
 
-class_counters = {cls: 0 for cls in CLASSES}
-valid_counters  = {cls: 0 for cls in CLASSES}
-total_saved     = 0
-skipped         = 0
+    # Approx line length from bounding box diagonal
+    x, y, w, h = cv2.boundingRect(points)
+    length = math.hypot(w, h)
 
-for i, fpath in enumerate(raw_paths):
-    img = cv2.imread(str(fpath), cv2.IMREAD_GRAYSCALE)
-    if img is None:
-        skipped += 1
-        continue
+    return angle, length
 
-    # Resize to 320x200 in case capture saved different size
-    img = cv2.resize(img, (320, 200))
 
-    blobs, binary = detect_blobs(img)
-    label, reason = assign_label(blobs)
+def is_vertical(angle, tol=20):
+    return abs(abs(angle) - 90) < tol
 
-    # ── Optional review of borderline cases ───────────────────────────────────
-    if REVIEW:
-        is_borderline = (
-            label == 'straight' and abs(blobs[0][0] - IMAGE_CENTRE
-                                        if blobs else 0) > CENTRE_BAND * 0.7
-        )
-        if is_borderline:
-            display = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-            cv2.putText(display, f"{label} ({reason})", (5, 20),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-            cv2.imshow('Review — press Y to accept, any other key to skip', display)
-            key = cv2.waitKey(0)
-            if key != ord('y') and key != ord('Y'):
-                skipped += 1
-                continue
 
-    # ── Route to train or valid ───────────────────────────────────────────────
-    class_counters[label] += 1
-    valid_counters[label]  += 1
-    img_num = class_counters[label]
+def is_horizontal(angle, tol=20):
+    return abs(angle) < tol
 
-    split = 'valid' if valid_counters[label] % VALID_EVERY == 0 else 'train'
 
-    fname    = f"img_{img_num:05d}.png"
-    out_path = os.path.join(OUTPUT_DIR, split, label, fname)
-    cv2.imwrite(out_path, img)
-    total_saved += 1
+def is_right_diagonal(angle, tol=25):
+    # "/" shape in image coordinates often gives negative angle
+    return abs(angle + 45) < tol
 
-    # Progress every 100 frames
-    if (i + 1) % 100 == 0:
-        print(f"  Processed {i+1}/{total}  saved={total_saved}  "
-              f"skipped={skipped}")
 
-if REVIEW:
-    cv2.destroyAllWindows()
+def is_left_diagonal(angle, tol=25):
+    # "\" shape in image coordinates often gives positive angle
+    return abs(angle - 45) < tol
 
-# ── Summary ───────────────────────────────────────────────────────────────────
 
-print(f"\n{'='*60}")
-print(f"  LABELLING COMPLETE")
-print(f"{'='*60}")
-print(f"  Frames processed : {total}")
-print(f"  Images saved     : {total_saved}")
-print(f"  Skipped          : {skipped}")
-print(f"\n  {'Class':20s}  {'Train':>6}  {'Valid':>6}  {'Total':>6}  Status")
-print(f"  {'-'*55}")
+def classify_image(img_path, debug=False):
+    gray = cv2.imread(str(img_path), cv2.IMREAD_GRAYSCALE)
+    if gray is None:
+        return "no line"
 
-for cls in CLASSES:
-    n_total = class_counters[cls]
-    n_valid = n_total // VALID_EVERY
-    n_train = n_total - n_valid
-    status  = "OK" if n_total >= 200 else "LOW — collect more"
-    print(f"  {cls:20s}  {n_train:>6}  {n_valid:>6}  {n_total:>6}  {status}")
+    mask = extract_white_mask(gray)
+    components = component_stats(mask)
 
-print(f"\n  Update TRAIN_DIR and VALID_DIR in your training script to:")
-print(f"    TRAIN_DIR = '{os.path.abspath(OUTPUT_DIR)}/train'")
-print(f"    VALID_DIR = '{os.path.abspath(OUTPUT_DIR)}/valid'")
-print(f"{'='*60}\n")
+    if len(components) == 0:
+        return "no line"
+
+    # Fit line to each component
+    line_like = []
+    for comp in components:
+        angle, length = fit_line_angle_and_length(comp["mask"])
+        if angle is None or length < MIN_LINE_LENGTH:
+            continue
+        line_like.append({
+            "angle": angle,
+            "length": length,
+            "area": comp["area"],
+            "bbox": comp["bbox"]
+        })
+
+    if len(line_like) == 0:
+        return "no line"
+
+    # Sort by significance
+    line_like.sort(key=lambda d: (d["area"], d["length"]), reverse=True)
+
+    # If multiple major directions/components -> junction
+    if len(line_like) >= JUNCTION_MIN_COMPONENTS:
+        major = line_like[:3]
+        direction_bins = set()
+
+        for item in major:
+            a = item["angle"]
+            if is_vertical(a):
+                direction_bins.add("vertical")
+            elif is_horizontal(a):
+                direction_bins.add("horizontal")
+            elif is_right_diagonal(a):
+                direction_bins.add("right")
+            elif is_left_diagonal(a):
+                direction_bins.add("left")
+
+        if len(direction_bins) >= 2:
+            return "junction"
+
+    # Otherwise classify by the largest component
+    a = line_like[0]["angle"]
+
+    if is_vertical(a):
+        return "vertical"
+    if is_horizontal(a):
+        return "horizontal"
+    if is_right_diagonal(a):
+        return "right"
+    if is_left_diagonal(a):
+        return "left"
+
+    return "no line"
+
+
+# ----------------------------
+# MAIN
+# ----------------------------
+def main():
+    random.seed(RANDOM_SEED)
+
+    input_dir = Path(INPUT_DIR)
+    output_dir = Path(OUTPUT_DIR)
+
+    if not input_dir.exists():
+        print(f"Input folder not found: {input_dir}")
+        return
+
+    ensure_dirs(output_dir)
+
+    image_paths = list_images(input_dir)
+    if not image_paths:
+        print(f"No images found in: {input_dir}")
+        return
+
+    results = []
+    for img_path in image_paths:
+        label = classify_image(img_path)
+        results.append((img_path, label))
+        print(f"{img_path.name} -> {label}")
+
+    random.shuffle(results)
+    val_count = int(len(results) * VAL_RATIO)
+
+    val_set = set(img for img, _ in results[:val_count])
+
+    for img_path, label in results:
+        split = "val" if img_path in val_set else "train"
+        copy_to_split(img_path, output_dir, split, label)
+
+    print("\nDone.")
+    print(f"Created dataset at: {output_dir.resolve()}")
+    print("Folder structure:")
+    print("dataset/")
+    print("  train/")
+    print("    right/ left/ vertical/ horizontal/ junction/ no line/")
+    print("  val/")
+    print("    right/ left/ vertical/ horizontal/ junction/ no line/")
+
+
+if __name__ == "__main__":
+    main()
